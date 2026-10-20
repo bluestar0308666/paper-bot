@@ -1,0 +1,115 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+
+APP_DIR="${PAPER_BOT_DIR:-$HOME/pubmed}"
+PID_FILE="$APP_DIR/paper-bot.pid"
+LOG_FILE="$APP_DIR/server.log"
+TUNNEL_PID_FILE="$APP_DIR/tunnel.pid"
+TUNNEL_LOG="$APP_DIR/tunnel.log"
+BOOTSTRAP_URL="https://raw.githubusercontent.com/bluestar0308666/paper-bot/main/bootstrap.sh"
+
+is_running() {
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    return 0
+  fi
+  local found
+  found="$(pgrep -f 'node (.*\/)?server\.js' 2>/dev/null | head -n 1 || true)"
+  if [ -n "$found" ]; then
+    echo "$found" > "$PID_FILE"
+    return 0
+  fi
+  return 1
+}
+
+start_service() {
+  if is_running; then
+    echo "Paper Bot 已运行，PID $(cat "$PID_FILE")"
+    return 0
+  fi
+  cd "$APP_DIR" || exit 1
+  nohup node server.js >> "$LOG_FILE" 2>&1 &
+  echo $! > "$PID_FILE"
+  sleep 2
+  if is_running; then
+    echo "Paper Bot 已启动：http://localhost:3008"
+  else
+    echo "启动失败，请运行：paper-bot log"
+    return 1
+  fi
+}
+
+stop_service() {
+  if is_running; then
+    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      is_running || break
+      sleep 1
+    done
+  fi
+  rm -f "$PID_FILE"
+  echo "Paper Bot 已停止"
+}
+
+backup_db() {
+  [ -f "$APP_DIR/data.db" ] || { echo "暂无数据库"; return 0; }
+  mkdir -p "$APP_DIR/backups"
+  local stamp target
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  target="$APP_DIR/backups/paper-bot-$stamp.db"
+  DB_SOURCE="$APP_DIR/data.db" DB_TARGET="$target" node - <<'NODE'
+const { DatabaseSync } = require('node:sqlite');
+const source = new DatabaseSync(process.env.DB_SOURCE);
+const target = process.env.DB_TARGET.replace(/'/g, "''");
+source.exec("VACUUM INTO '" + target + "'");
+NODE
+  echo "数据库已备份：$target"
+}
+
+start_tunnel() {
+  if [ -f "$TUNNEL_PID_FILE" ] && kill -0 "$(cat "$TUNNEL_PID_FILE")" 2>/dev/null; then
+    echo "隧道已运行，PID $(cat "$TUNNEL_PID_FILE")"
+    return 0
+  fi
+  cd "$APP_DIR" || exit 1
+  nohup bash tunnel.sh >> "$TUNNEL_LOG" 2>&1 &
+  echo $! > "$TUNNEL_PID_FILE"
+  echo "隧道正在启动。稍后运行 paper-bot tunnel-url 查看网址。"
+}
+
+stop_tunnel() {
+  if [ -f "$TUNNEL_PID_FILE" ]; then
+    kill "$(cat "$TUNNEL_PID_FILE")" 2>/dev/null || true
+  fi
+  rm -f "$TUNNEL_PID_FILE"
+  echo "隧道已停止"
+}
+
+case "${1:-help}" in
+  start) start_service ;;
+  stop) stop_service ;;
+  restart) stop_service; start_service ;;
+  status)
+    if is_running; then
+      echo "Paper Bot 正在运行，PID $(cat "$PID_FILE")"
+      curl -s -o /dev/null -w '本机 HTTP 状态：%{http_code}\n' http://127.0.0.1:3008/
+    else
+      echo "Paper Bot 未运行"
+      exit 1
+    fi
+    ;;
+  log) tail -n 100 "$LOG_FILE" ;;
+  backup) backup_db ;;
+  update)
+    command -v curl >/dev/null 2>&1 || pkg install -y curl
+    curl -fsSL "$BOOTSTRAP_URL" | bash -s -- --update
+    ;;
+  tunnel-start) start_tunnel ;;
+  tunnel-stop) stop_tunnel ;;
+  tunnel-url)
+    grep -Eo 'https://[^ ]+\.(lhr\.life|localhost\.run)' "$TUNNEL_LOG" 2>/dev/null | tail -n 1 ||
+      echo "暂未找到网址，请稍后再试或运行 paper-bot log"
+    ;;
+  *)
+    echo "用法：paper-bot {start|stop|restart|status|log|backup|update|tunnel-start|tunnel-stop|tunnel-url}"
+    ;;
+esac

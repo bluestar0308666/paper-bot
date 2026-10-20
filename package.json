@@ -1,0 +1,13 @@
+{
+  "name": "paper-bot",
+  "version": "0.4.2",
+  "private": false,
+  "description": "公众号论文介绍 -> PubMed -> DeepSeek 总结",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
